@@ -10,7 +10,7 @@ import requests
 import uuid
 from urllib.parse import urlparse
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 def download_image(image_url, path):
     try:
@@ -55,12 +55,35 @@ def main(author, path, last=False, include_actifit=False, all_posts=False, today
     account = Account(author, blockchain_instance=hive)
     
     # Yesterday's and today's dates
-    yesterday = (datetime.utcnow() - timedelta(days=1)).date()
-    today_date = datetime.utcnow().date()
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date()
+    today_date = datetime.now(timezone.utc).date()
 
-    # Get the account's posts
-    posts = account.get_blog(limit=500)  # Adjust the limit as needed
-    
+    # Get the account's posts. The node caps get_blog at 20 per call, so
+    # page through it with start_entry_id until we have what we need.
+    page_limit = 20
+    posts = []
+    start_entry_id = 0
+    while True:
+        page = account.get_blog(start_entry_id=start_entry_id, limit=page_limit)
+        if not page:
+            break
+        posts.extend(page)
+
+        if last:
+            break
+
+        if not all_posts:
+            # Blog entries come back newest first, so once we've paged past
+            # the target date window there's nothing older left to find.
+            oldest_date = page[-1]["created"].date()
+            target_date = today_date if today else yesterday
+            if oldest_date < target_date:
+                break
+
+        if len(page) < page_limit:
+            break
+        start_entry_id += len(page)
+
     if last:
         # Get only the last post
         posts = [posts[0]] if posts else []
@@ -79,8 +102,8 @@ def main(author, path, last=False, include_actifit=False, all_posts=False, today
         # Use the 'created' field directly as datetime
         post_date = post["created"].date()
         
-        # Conditions for --all, --today, and yesterday's posts
-        if not all_posts:
+        # Conditions for --last, --all, --today, and yesterday's posts
+        if not all_posts and not last:
             if today:
                 if post_date != today_date:
                     continue
@@ -95,7 +118,9 @@ def main(author, path, last=False, include_actifit=False, all_posts=False, today
         
         # Download images and replace the links in markdown
         images = post.get('json_metadata', {}).get('image', [])
-        
+        if isinstance(images, str):
+            images = [images]
+
         if images:
             print(f"Images found in the post (json_metadata): {images}")
         
